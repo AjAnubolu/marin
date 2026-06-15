@@ -1,16 +1,34 @@
 # probes
 
-Synthetic infra canary: an always-on daemon that runs three probes against Iris
-and Finelog on a fixed cadence.
+Synthetic infra canary: an always-on daemon that runs **collectors** against
+Iris and Finelog on a fixed cadence. A collector emits one or more `Sample`s
+(`metric`, `value`, JSON `labels`, `collected_at`) — the single shape for both
+up/down health checks and numeric gauges.
 
-- `controller-ping` — `list_workers()` on the Iris controller.
-- `iris-job-submit/<zone>` — submit a tiny job per zone, wait for SUCCEEDED.
-- `finelog-write` — write a nonce and read it back.
+Health checks (emit a `probe_up` 1/0 sample; the runner adds `probe_latency_ms`):
 
-Each result is logged to stdout (`probe <name>: ok|fail [<ms>ms] start=<utc>`),
-written to the `infra.canary.probes` finelog namespace, and appended to a daily
-JSONL that rolls up to `gs://marin-us-central1/infra/probes/dt=<date>/` at UTC
-rollover.
+- `controller-ping` — `list_workers()` on the Iris controller (cadence 60s).
+- `finelog-write` — write a nonce and read it back (60s).
+- `iris-job-submit/<zone>` — submit a tiny job per zone, wait for SUCCEEDED (300s).
+
+Gauge:
+
+- `tpu-provisioning` — TPU create-outcome stats over a trailing 3h window,
+  recomputed every 15 min from the controller's own logs via one bounded finelog
+  SQL query. Each cycle emits per-(`zone`, `tpu_type`) pool rows plus a
+  fleet-wide rollup (`scope=fleet`): `tpu_provision_success` /
+  `_failure` / `_failure_stockout` / `_failure_error` / `_outcomes`,
+  `tpu_provision_latency_seconds{quantile}` (Created→Bootstrap-completed), and
+  fleet-only `tpu_provision_success_ratio`, `_created`, `_pools_placing`,
+  `_pools_stockout_dead`, `_unmapped`, `_window_hours`. Counts are windowed
+  gauges — derive rates downstream; the stockout/error split separates capacity
+  shortfalls from real controller faults.
+
+Each sample is logged to stdout (`probe <name>: ok|fail [<ms>ms] start=<utc>`),
+written to the `infra.canary.metrics` finelog namespace (query it with
+`finelog query <cluster> 'SELECT ... FROM "infra.canary.metrics"'`, slicing
+labels with DuckDB `json_extract`), and appended to a daily JSONL that rolls up
+to `gs://<us-central1 data bucket>/infra/probes/dt=<date>/` at UTC rollover.
 
 Standalone package (own `pyproject.toml`/`uv.lock`): pulls `marin-iris`,
 `marin-finelog`, `marin-rigging` from the rolling GitHub releases via
